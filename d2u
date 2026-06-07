@@ -1,0 +1,113 @@
+#!/usr/bin/env zsh
+Version=1.00
+Myname=${0:t}
+SCRIPT=${(%):-%N}
+
+doc=$(cat \
+<<'DOC'
+= d2u - convert msdos file to unix, removing any BOM mark
+
+= Synopsis
+d2u file [file...]	
+
+= Options
+-h,--help	print short help and exit
+-H,--Help	print full documentation and exit
+-V,--version	print version and exit
+-v,--verbose	report each file being handled
+
+= Description
+d2u converts ms-dos-like files in place to unix.
+- replaces |crlf| sequences with |lf|'s.
+- if |cr| is the only line separator (like in hp-unix) it is replaced with |lf|.
+- |^Z|, |^Q| and |null| characters are removed,
+- any BOM mark is removed.
+- character set is converted to utf-8.
+
+= Author
+[Wybo Dekker](wybodekker@me.com)
+
+= Copyright
+Released under the [GNU General Public License](www.gnu.org/copyleft/gpl.html)
+DOC
+)
+
+# --- colors, help from embedded doc, die and warn ---
+autoload -U colors && colors
+nv="-$Myname-${Version/./\\.} (press h for help, q to quit)"
+helpsrt() { sed -n '/^= Synopsis/,/^= Desc/{//d;p}' <<<"$doc"; exit; }
+helpall() { less -P"$nv" <<<"$doc"; exit; }
+    die() { print -Plu2 "$Myname: %F{r}$^@%f"; exit 1 }
+   Warn() { print -Plu2 "$Myname: %F{m}$^@%f" }
+   warn() { (( $#v )) && Warn "$@"; }
+
+# --- options ---
+zparseopts -D \
+   {h,-help}=h \
+   {H,-Help}=H \
+   {V,-version}=V \
+   {v,-verbose}=v \
+   I=I \
+   || return 1
+
+(( $#h )) && helpsrt
+(( $#H )) && helpall
+(( $#V )) && { print $Version; exit }
+(( $#v )) && verbose=true
+(( $#I )) && { instscript "$SCRIPT" ||
+               die 'the -I option is for developers only'
+      	       exit
+             }
+for arg in "$@"; do
+  [[ $arg == -- ]] && break
+  [[ $arg == -* ]] && die "Unknown option: $arg"
+done
+(( $# )) || die "I need at least 1 file"
+
+which xxd >/dev/null || die "Please install xxd"
+# Check each file
+err=()
+for file in $@; do
+   if [[ ! -f $file ]]; then
+      err+=("$file")
+   fi
+done
+(( $#err > 0 )) && die "Nothing done because of missing file(s): ${err[*]}"
+   
+# Handle each file                                                                        
+for file in $@; do
+   warn "handling $file"
+   tmpfile=$(mktemp)
+   tmpfile2=$(mktemp)
+
+   # --- Detect encoding en converteer naar UTF-8 --------------------------
+   encoding=$(file -b --mime-encoding "$file")
+
+   if [[ "$encoding" != "utf-8" ]]; then
+      warn "converting $file from $encoding to utf-8"
+      if ! iconv -f "$encoding" -t utf-8 "$file" > "$tmpfile2" 2>/dev/null; then
+         Warn "iconv failed for $file, skipping encoding conversion"
+         cp "$file" "$tmpfile2"
+      fi
+   else
+      cp "$file" "$tmpfile2"
+   fi
+
+   # --- Remove BOM (if any) ----------------------------------------------
+   if [[ $(head -c 3 "$tmpfile2" | xxd -p) == "efbbbf" ]]; then
+      warn 'removing BOM'
+      tail -c +4 "$tmpfile2" > "${tmpfile2}.nobom"
+      mv "${tmpfile2}.nobom" "$tmpfile2"
+   fi
+
+   # --- Line processing ---------------------------------------------------
+   while IFS= read -r line || [[ -n $line ]]; do
+      line=$(print -r -- "$line" | tr -d '\032\021\000')
+      line=${line%%$'\r'}
+      print -r -- "$line"
+   done < "$tmpfile2" > "$tmpfile"
+
+   # Replace original file
+   mv "$tmpfile" "$file"
+   rm -f "$tmpfile2"
+done
